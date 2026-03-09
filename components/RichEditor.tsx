@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ClipboardEvent } from "react";
 import { editorElementToRichDoc, richDocToEditorHtml } from "./editor-serializer";
+import { normalizeHexColor } from "@/lib/color";
 import { createId } from "@/lib/id";
+import { isSupportedImageMimeType, SUPPORTED_IMAGE_EXTENSIONS } from "@/lib/image-file";
 import type { RichDoc } from "@/lib/types";
 
 interface RichEditorProps {
@@ -38,21 +40,6 @@ const COMMON_TEXT_COLORS = [
   { label: "紫", value: "#7c3aed" }
 ] as const;
 
-function rgbToHex(color: string): string {
-  const normalized = color.trim().toLowerCase();
-  if (/^#[0-9a-f]{6}$/.test(normalized)) {
-    return normalized;
-  }
-
-  const match = normalized.match(/rgba?\((\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
-  if (!match) {
-    return BODY_TEXT_COLOR;
-  }
-
-  const toHex = (value: string) => Number(value).toString(16).padStart(2, "0");
-  return `#${toHex(match[1])}${toHex(match[2])}${toHex(match[3])}`;
-}
-
 function placeCaretAfter(node: Node): void {
   const selection = window.getSelection();
   if (!selection) {
@@ -72,11 +59,6 @@ function runExecCommand(command: string, value?: string): boolean {
   } catch {
     return false;
   }
-}
-
-function normalizeColorValue(color: string): string {
-  const hex = rgbToHex(color);
-  return /^#[0-9a-f]{6}$/i.test(hex) ? hex : BODY_TEXT_COLOR;
 }
 
 function parseFontWeight(fontWeight: string): number {
@@ -394,23 +376,12 @@ async function readImageDimensions(file: File): Promise<{ width: number; height:
 
 function isSupportedImageFile(file: File): boolean {
   const type = (file.type || "").toLowerCase();
-  if (
-    [
-      "image/png",
-      "image/jpeg",
-      "image/webp",
-      "image/gif",
-      "image/heic",
-      "image/heif"
-    ].includes(type)
-  ) {
+  if (isSupportedImageMimeType(type)) {
     return true;
   }
 
   const name = file.name.toLowerCase();
-  return [".png", ".jpg", ".jpeg", ".webp", ".gif", ".heic", ".heif"].some((ext) =>
-    name.endsWith(ext)
-  );
+  return SUPPORTED_IMAGE_EXTENSIONS.some((ext) => name.endsWith(`.${ext}`));
 }
 
 export function RichEditor({
@@ -515,7 +486,7 @@ export function RichEditor({
       ? Math.max(Number.isFinite(leftPad) ? leftPad : 0, Number.isFinite(rightPad) ? rightPad : 0)
       : 0;
     setInlinePadding(Math.max(0, Math.min(80, Math.round(nextPadding))));
-    setInlineColor(normalizeColorValue(computed.color || BODY_TEXT_COLOR));
+    setInlineColor(normalizeHexColor(computed.color || BODY_TEXT_COLOR, BODY_TEXT_COLOR));
   }, []);
 
   const rememberSelection = useCallback(() => {
@@ -1209,7 +1180,7 @@ export function RichEditor({
 
   const applyColor = useCallback(
     (color: string) => {
-      const normalized = normalizeColorValue(color);
+      const normalized = normalizeHexColor(color, BODY_TEXT_COLOR);
       setInlineColor(normalized);
 
       applySelectionStyle({ color: normalized });

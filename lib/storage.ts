@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { getExtensionsForImageMimeType, SUPPORTED_IMAGE_EXTENSIONS } from "./image-file";
 import type { Asset } from "./types";
 
 const ROOT = process.cwd();
@@ -33,16 +34,6 @@ export function safeResolveExportFile(fileName: string): string {
   return resolved;
 }
 
-function extByMime(mime: string): string[] {
-  const normalized = (mime || "").toLowerCase();
-  if (normalized === "image/png") return ["png"];
-  if (normalized === "image/jpeg" || normalized === "image/jpg") return ["jpg", "jpeg"];
-  if (normalized === "image/webp") return ["webp"];
-  if (normalized === "image/gif") return ["gif"];
-  if (normalized === "image/heic" || normalized === "image/heif") return ["heic", "heif"];
-  return [];
-}
-
 export function resolveExistingAssetPath(asset: Asset): string | null {
   const candidates = new Set<string>();
 
@@ -56,13 +47,13 @@ export function resolveExistingAssetPath(asset: Asset): string | null {
     candidates.add(path.join(projectDir, fileNameFromLocal));
   }
 
-  const exts = new Set<string>(extByMime(asset.type));
+  const exts = new Set<string>(getExtensionsForImageMimeType(asset.type));
   const extFromLocal = path.extname(asset.localPath || "").replace(".", "").toLowerCase();
   if (extFromLocal) {
     exts.add(extFromLocal);
   }
   // Safe fallback extension list.
-  for (const ext of ["png", "jpg", "jpeg", "webp", "gif", "heic", "heif"]) {
+  for (const ext of SUPPORTED_IMAGE_EXTENSIONS) {
     exts.add(ext);
   }
 

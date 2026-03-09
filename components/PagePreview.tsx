@@ -14,6 +14,10 @@ interface PagePreviewProps {
   onSelectPage?: (pageNo: number) => void;
 }
 
+function openPageDownload(projectId: string, pageNo: number): void {
+  window.open(`/api/export/page/${projectId}/${pageNo}`, "_blank", "noopener,noreferrer");
+}
+
 function runStyle(theme: ThemeVars, run: TextRun): CSSProperties {
   const paddingInline = run.marks?.paddingInline ?? 0;
   return {
@@ -303,14 +307,14 @@ export function PagePreview({
     );
   }
 
-  const selected =
-    pages.find((item) => item.pageNo === selectedPageNo) ??
-    pages[0];
+  const selected = pages.find((item) => item.pageNo === selectedPageNo) ?? pages[0];
 
   if (compact) {
     const selectedIndex = pages.findIndex((item) => item.pageNo === selected.pageNo);
     const previousPage = selectedIndex > 0 ? pages[selectedIndex - 1] : null;
-    const nextPage = selectedIndex >= 0 && selectedIndex < pages.length - 1 ? pages[selectedIndex + 1] : null;
+    const nextPage = selectedIndex >= 0 && selectedIndex < pages.length - 1
+      ? pages[selectedIndex + 1]
+      : null;
 
     return (
       <div className="panel preview-compact">
@@ -319,11 +323,7 @@ export function PagePreview({
           <button
             type="button"
             onClick={() => {
-              window.open(
-                `/api/export/page/${projectId}/${selected.pageNo}`,
-                "_blank",
-                "noopener,noreferrer"
-              );
+              openPageDownload(projectId, selected.pageNo);
             }}
           >
             下载当前页
@@ -399,11 +399,7 @@ export function PagePreview({
               <button
                 type="button"
                 onClick={() => {
-                  window.open(
-                    `/api/export/page/${projectId}/${page.pageNo}`,
-                    "_blank",
-                    "noopener,noreferrer"
-                  );
+                  openPageDownload(projectId, page.pageNo);
                 }}
               >
                 下载此页

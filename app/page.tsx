@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PagePreview } from "@/components/PagePreview";
 import { RichEditor } from "@/components/RichEditor";
+import { normalizeHexColor } from "@/lib/color";
 import { getTemplate, TEMPLATES } from "@/lib/defaults";
 import { createId } from "@/lib/id";
 import { BACKGROUND_PRESETS } from "@/lib/presets";
@@ -26,19 +27,43 @@ interface Suggestions {
   tags: string[];
 }
 
-function normalizeHexColor(color: string, fallback: string): string {
-  const normalized = color.trim().toLowerCase();
-  if (/^#[0-9a-f]{6}$/.test(normalized)) {
-    return normalized;
+interface ErrorPayload {
+  error?: string;
+}
+
+function toProjectSummary(project: Project): ProjectSummary {
+  return {
+    id: project.id,
+    title: project.title,
+    createdAt: project.createdAt,
+    updatedAt: project.updatedAt
+  };
+}
+
+function filterByKeyword<T>(
+  items: T[],
+  keyword: string,
+  getSearchText: (item: T) => string
+): T[] {
+  const normalizedKeyword = keyword.trim().toLowerCase();
+  if (!normalizedKeyword) {
+    return items;
   }
 
-  const match = normalized.match(/rgba?\((\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
-  if (!match) {
-    return fallback;
-  }
+  return items.filter((item) => getSearchText(item).toLowerCase().includes(normalizedKeyword));
+}
 
-  const toHex = (value: string) => Number(value).toString(16).padStart(2, "0");
-  return `#${toHex(match[1])}${toHex(match[2])}${toHex(match[3])}`;
+async function requestJson<T extends ErrorPayload>(
+  input: RequestInfo | URL,
+  init: RequestInit | undefined,
+  fallbackMessage: string
+): Promise<T> {
+  const response = await fetch(input, init);
+  const payload = (await response.json()) as T;
+  if (!response.ok) {
+    throw new Error(payload.error || fallbackMessage);
+  }
+  return payload;
 }
 
 function normalizeProject(project: Project): Project {
@@ -133,73 +158,58 @@ export default function HomePage() {
   const hydrationRef = useRef(true);
 
   const activeTemplate = useMemo(() => {
-    if (!project) {
-      return TEMPLATES[0];
-    }
-    return TEMPLATES.find((item) => item.id === project.templateId) ?? TEMPLATES[0];
+    return project ? getTemplate(project.templateId) : TEMPLATES[0];
   }, [project]);
 
-  const filteredBackgrounds = useMemo(() => {
-    const keyword = presetKeyword.trim().toLowerCase();
-    if (!keyword) {
-      return BACKGROUND_PRESETS;
-    }
+  const filteredBackgrounds = useMemo(
+    () => filterByKeyword(BACKGROUND_PRESETS, presetKeyword, (item) => `${item.name} ${item.description}`),
+    [presetKeyword]
+  );
 
-    return BACKGROUND_PRESETS.filter((item) =>
-      `${item.name} ${item.description}`.toLowerCase().includes(keyword)
+  const filteredTemplates = useMemo(
+    () => filterByKeyword(TEMPLATES, presetKeyword, (item) => item.name),
+    [presetKeyword]
+  );
+
+  const loadProject = useCallback(async (projectId: string) => {
+    const payload = await requestJson<{ project: Project; error?: string }>(
+      `/api/projects/${projectId}`,
+      { cache: "no-store" },
+      "读取项目失败"
     );
-  }, [presetKeyword]);
+    return normalizeProject(payload.project);
+  }, []);
 
-  const filteredTemplates = useMemo(() => {
-    const keyword = presetKeyword.trim().toLowerCase();
-    if (!keyword) {
-      return TEMPLATES;
-    }
-
-    return TEMPLATES.filter((item) => item.name.toLowerCase().includes(keyword));
-  }, [presetKeyword]);
+  const createProjectWithTitle = useCallback(async (title: string) => {
+    const payload = await requestJson<{ project: Project; error?: string }>(
+      "/api/projects",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title })
+      },
+      "创建项目失败"
+    );
+    return normalizeProject(payload.project);
+  }, []);
 
   const bootstrap = useCallback(async () => {
     setLoading(true);
     try {
-      const response = await fetch("/api/projects", { cache: "no-store" });
-      const payload = (await response.json()) as { projects: ProjectSummary[]; error?: string };
-      if (!response.ok) {
-        throw new Error(payload.error || "加载项目失败");
-      }
-
-      const existing = payload.projects || [];
-      setProjects(existing);
+      const payload = await requestJson<{ projects: ProjectSummary[]; error?: string }>(
+        "/api/projects",
+        { cache: "no-store" },
+        "加载项目失败"
+      );
+      const existing = payload.projects ?? [];
 
       if (!existing.length) {
-        const created = await fetch("/api/projects", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ title: "我的第一篇小红书长文" })
-        });
-        const createdPayload = (await created.json()) as { project: Project; error?: string };
-        if (!created.ok) {
-          throw new Error(createdPayload.error || "创建项目失败");
-        }
-
-        const normalized = normalizeProject(createdPayload.project);
+        const normalized = await createProjectWithTitle("我的第一篇小红书长文");
         setProject(normalized);
-        setProjects([
-          {
-            id: normalized.id,
-            title: normalized.title,
-            createdAt: normalized.createdAt,
-            updatedAt: normalized.updatedAt
-          }
-        ]);
+        setProjects([toProjectSummary(normalized)]);
       } else {
-        const target = await fetch(`/api/projects/${existing[0].id}`, { cache: "no-store" });
-        const targetPayload = (await target.json()) as { project: Project; error?: string };
-        if (!target.ok) {
-          throw new Error(targetPayload.error || "读取项目失败");
-        }
-
-        setProject(normalizeProject(targetPayload.project));
+        setProjects(existing);
+        setProject(await loadProject(existing[0].id));
       }
 
       setMessage("项目已加载");
@@ -208,60 +218,70 @@ export default function HomePage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [createProjectWithTitle, loadProject]);
 
   const recalc = useCallback(async (docProject: Project) => {
-    const [paginateRes, complianceRes, suggestionRes] = await Promise.all([
-      fetch("/api/paginate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          doc: docProject.doc,
-          templateId: docProject.templateId,
-          themeVars: docProject.themeVars
-        })
-      }),
-      fetch("/api/compliance/check", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ doc: docProject.doc })
-      }),
-      fetch("/api/suggestions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ doc: docProject.doc })
-      })
+    const [paginatePayload, compliancePayload, suggestionPayload] = await Promise.all([
+      requestJson<{ pages: PageRender[]; warnings: string[]; error?: string }>(
+        "/api/paginate",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            doc: docProject.doc,
+            templateId: docProject.templateId,
+            themeVars: docProject.themeVars
+          })
+        },
+        "分页失败"
+      ),
+      requestJson<{ issues: ComplianceIssue[]; error?: string }>(
+        "/api/compliance/check",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ doc: docProject.doc })
+        },
+        "合规检查失败"
+      ),
+      requestJson<Suggestions & { error?: string }>(
+        "/api/suggestions",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ doc: docProject.doc })
+        },
+        "建议生成失败"
+      )
     ]);
-
-    const paginatePayload = (await paginateRes.json()) as {
-      pages: PageRender[];
-      warnings: string[];
-      error?: string;
-    };
-    const compliancePayload = (await complianceRes.json()) as {
-      issues: ComplianceIssue[];
-      error?: string;
-    };
-    const suggestionPayload = (await suggestionRes.json()) as Suggestions & { error?: string };
-
-    if (!paginateRes.ok) {
-      throw new Error(paginatePayload.error || "分页失败");
-    }
-    if (!complianceRes.ok) {
-      throw new Error(compliancePayload.error || "合规检查失败");
-    }
-    if (!suggestionRes.ok) {
-      throw new Error(suggestionPayload.error || "建议生成失败");
-    }
 
     setPages(paginatePayload.pages || []);
     setWarnings(paginatePayload.warnings || []);
     setIssues(compliancePayload.issues || []);
     setSuggestions({
-      titles: suggestionPayload.titles || [],
-      tags: suggestionPayload.tags || []
+      titles: suggestionPayload.titles ?? [],
+      tags: suggestionPayload.tags ?? []
     });
   }, []);
+
+  const selectProject = useCallback(
+    async (projectId: string) => {
+      hydrationRef.current = true;
+      setHistory([]);
+      setFuture([]);
+      setProject(await loadProject(projectId));
+    },
+    [loadProject]
+  );
+
+  const createAndSelectProject = useCallback(async (title: string) => {
+    const normalized = await createProjectWithTitle(title);
+    hydrationRef.current = true;
+    setProjects((prev) => [toProjectSummary(normalized), ...prev]);
+    setHistory([]);
+    setFuture([]);
+    setProject(normalized);
+  }, [createProjectWithTitle]);
 
   useEffect(() => {
     void bootstrap();
@@ -306,35 +326,25 @@ export default function HomePage() {
     const timer = window.setTimeout(async () => {
       try {
         setIsSaving(true);
-        const response = await fetch(`/api/projects/${project.id}/content`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            title: project.title,
-            templateId: project.templateId,
-            themeVars: project.themeVars,
-            doc: project.doc
-          })
-        });
-
-        const payload = (await response.json()) as { project: Project; error?: string };
-        if (!response.ok) {
-          throw new Error(payload.error || "保存失败");
-        }
-
+        const payload = await requestJson<{ project: Project; error?: string }>(
+          `/api/projects/${project.id}/content`,
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              title: project.title,
+              templateId: project.templateId,
+              themeVars: project.themeVars,
+              doc: project.doc
+            })
+          },
+          "保存失败"
+        );
         const normalized = normalizeProject(payload.project);
 
         setProjects((prev) => {
           const next = prev.filter((item) => item.id !== normalized.id);
-          return [
-            {
-              id: normalized.id,
-              title: normalized.title,
-              createdAt: normalized.createdAt,
-              updatedAt: normalized.updatedAt
-            },
-            ...next
-          ];
+          return [toProjectSummary(normalized), ...next];
         });
       } catch (error) {
         setMessage(error instanceof Error ? error.message : "自动保存失败");
@@ -447,19 +457,21 @@ export default function HomePage() {
 
     try {
       setMessage("正在导出...");
-      const response = await fetch("/api/export", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId: project.id })
-      });
-
-      const payload = (await response.json()) as {
+      const payload = await requestJson<{
         error?: string;
         downloadUrl?: string;
         imageCount?: number;
-      };
+      }>(
+        "/api/export",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ projectId: project.id })
+        },
+        "导出失败"
+      );
 
-      if (!response.ok || !payload.downloadUrl) {
+      if (!payload.downloadUrl) {
         throw new Error(payload.error || "导出失败");
       }
 
@@ -495,17 +507,11 @@ export default function HomePage() {
             <select
               value={project.id}
               onChange={async (event) => {
-                const id = event.target.value;
-                const response = await fetch(`/api/projects/${id}`, { cache: "no-store" });
-                const payload = (await response.json()) as { project: Project; error?: string };
-                if (!response.ok) {
-                  setMessage(payload.error || "切换项目失败");
-                  return;
+                try {
+                  await selectProject(event.target.value);
+                } catch (error) {
+                  setMessage(error instanceof Error ? error.message : "切换项目失败");
                 }
-                hydrationRef.current = true;
-                setHistory([]);
-                setFuture([]);
-                setProject(normalizeProject(payload.project));
               }}
             >
               {projects.map((item) => (
@@ -519,31 +525,11 @@ export default function HomePage() {
           <button
             type="button"
             onClick={async () => {
-              const response = await fetch("/api/projects", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ title: `新建笔记 ${new Date().toLocaleString()}` })
-              });
-              const payload = (await response.json()) as { project: Project; error?: string };
-              if (!response.ok) {
-                setMessage(payload.error || "新建项目失败");
-                return;
+              try {
+                await createAndSelectProject(`新建笔记 ${new Date().toLocaleString()}`);
+              } catch (error) {
+                setMessage(error instanceof Error ? error.message : "新建项目失败");
               }
-
-              const normalized = normalizeProject(payload.project);
-              hydrationRef.current = true;
-              setProjects((prev) => [
-                {
-                  id: normalized.id,
-                  title: normalized.title,
-                  createdAt: normalized.createdAt,
-                  updatedAt: normalized.updatedAt
-                },
-                ...prev
-              ]);
-              setHistory([]);
-              setFuture([]);
-              setProject(normalized);
             }}
           >
             新建项目

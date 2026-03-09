@@ -4,32 +4,7 @@ import { imageSize } from "image-size";
 import { createAsset, ensureProjectAssetDir, getProject } from "@/lib/db";
 import { sha1 } from "@/lib/hash";
 import { fail, ok } from "@/lib/http";
-
-const ALLOWED = new Set([
-  "image/png",
-  "image/jpeg",
-  "image/jpg",
-  "image/webp",
-  "image/gif",
-  "image/heic",
-  "image/heif"
-]);
-
-function extensionByType(type: string): string {
-  if (type === "image/png") {
-    return "png";
-  }
-  if (type === "image/webp") {
-    return "webp";
-  }
-  if (type === "image/gif") {
-    return "gif";
-  }
-  if (type === "image/heic" || type === "image/heif") {
-    return "heic";
-  }
-  return "jpg";
-}
+import { detectImageExtension, inferImageMimeType } from "@/lib/image-file";
 
 function isUploadableFile(file: unknown): file is Blob & { type: string; arrayBuffer: () => Promise<ArrayBuffer> } {
   return Boolean(
@@ -38,23 +13,6 @@ function isUploadableFile(file: unknown): file is Blob & { type: string; arrayBu
       "arrayBuffer" in file &&
       typeof (file as { arrayBuffer?: unknown }).arrayBuffer === "function"
   );
-}
-
-function detectExtensionByName(name: string): string {
-  const lower = name.toLowerCase();
-  if (lower.endsWith(".png")) {
-    return "png";
-  }
-  if (lower.endsWith(".webp")) {
-    return "webp";
-  }
-  if (lower.endsWith(".gif")) {
-    return "gif";
-  }
-  if (lower.endsWith(".heic") || lower.endsWith(".heif")) {
-    return "heic";
-  }
-  return "jpg";
 }
 
 export async function POST(request: Request) {
@@ -77,19 +35,9 @@ export async function POST(request: Request) {
 
     const maybeType = String((file as { type?: string }).type ?? "").toLowerCase();
     const maybeName = String((file as { name?: string }).name ?? "");
-    const fallbackExt = detectExtensionByName(maybeName);
+    const mime = inferImageMimeType(maybeType, maybeName);
 
-    const mime = maybeType || (fallbackExt === "png"
-      ? "image/png"
-      : fallbackExt === "webp"
-        ? "image/webp"
-        : fallbackExt === "gif"
-          ? "image/gif"
-          : fallbackExt === "heic"
-            ? "image/heic"
-            : "image/jpeg");
-
-    if (!ALLOWED.has(mime)) {
+    if (!mime) {
       return fail("暂仅支持 PNG/JPG/WebP/GIF/HEIC", 415);
     }
 
@@ -111,7 +59,7 @@ export async function POST(request: Request) {
     }
 
     const hash = sha1(buffer);
-    const ext = extensionByType(mime);
+    const ext = detectImageExtension(maybeName, mime);
     const dir = ensureProjectAssetDir(projectId);
     const fileName = `${hash}.${ext}`;
     const localPath = path.join(dir, fileName);

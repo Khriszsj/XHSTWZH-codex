@@ -80,7 +80,8 @@ function toProject(row: {
 export function createProject(title?: string): Project {
   const now = Date.now();
   const id = createId("project");
-  const doc = createDefaultDoc(title || "未命名笔记");
+  const resolvedTitle = title || "未命名笔记";
+  const doc = createDefaultDoc(resolvedTitle);
   const template = getTemplate();
   const themeVars = template.defaultTheme;
 
@@ -89,7 +90,7 @@ export function createProject(title?: string): Project {
      VALUES (@id, @title, @template_id, @theme_vars, @doc_json, @created_at, @updated_at)`
   ).run({
     id,
-    title: title || "未命名笔记",
+    title: resolvedTitle,
     template_id: template.id,
     theme_vars: JSON.stringify(themeVars),
     doc_json: JSON.stringify(doc),
@@ -101,7 +102,7 @@ export function createProject(title?: string): Project {
 
   return {
     id,
-    title: title || "未命名笔记",
+    title: resolvedTitle,
     templateId: template.id,
     themeVars,
     doc,
