@@ -20,6 +20,11 @@ interface ParagraphAnchorSnapshot {
   offset: number;
 }
 
+interface RangeSelectionSnapshot {
+  start: ParagraphAnchorSnapshot;
+  end: ParagraphAnchorSnapshot;
+}
+
 interface PendingInsertContext {
   anchor: ParagraphAnchorSnapshot | null;
   paragraphId: string | null;
@@ -134,7 +139,15 @@ function createParagraphAnchorSnapshot(
   editor: HTMLElement,
   range: Range
 ): ParagraphAnchorSnapshot | null {
-  const paragraph = getClosestParagraph(range.startContainer);
+  return createParagraphAnchorSnapshotAt(editor, range.startContainer, range.startOffset);
+}
+
+function createParagraphAnchorSnapshotAt(
+  editor: HTMLElement,
+  container: Node,
+  offset: number
+): ParagraphAnchorSnapshot | null {
+  const paragraph = getClosestParagraph(container);
   if (!paragraph || paragraph.parentElement !== editor) {
     return null;
   }
@@ -145,16 +158,14 @@ function createParagraphAnchorSnapshot(
   }
 
   try {
-    const collapsed = range.cloneRange();
-    collapsed.collapse(true);
     const probe = document.createRange();
     probe.selectNodeContents(paragraph);
-    probe.setEnd(collapsed.startContainer, collapsed.startOffset);
-    const offset = Math.max(0, probe.toString().length);
-    return { paragraphId, offset };
+    probe.setEnd(container, offset);
+    const characterOffset = Math.max(0, probe.toString().length);
+    return { paragraphId, offset: characterOffset };
   } catch {
-    const offset = Math.max(0, paragraph.textContent?.length ?? 0);
-    return { paragraphId, offset };
+    const characterOffset = Math.max(0, paragraph.textContent?.length ?? 0);
+    return { paragraphId, offset: characterOffset };
   }
 }
 
@@ -198,6 +209,43 @@ function resolveRangeFromAnchorSnapshot(
   }
   range.collapse(true);
   return range;
+}
+
+function createRangeSelectionSnapshot(
+  editor: HTMLElement,
+  range: Range
+): RangeSelectionSnapshot | null {
+  const start = createParagraphAnchorSnapshotAt(editor, range.startContainer, range.startOffset);
+  const end = createParagraphAnchorSnapshotAt(editor, range.endContainer, range.endOffset);
+  if (!start || !end) {
+    return null;
+  }
+
+  return { start, end };
+}
+
+function resolveRangeFromSelectionSnapshot(
+  editor: HTMLElement,
+  snapshot: RangeSelectionSnapshot | null
+): Range | null {
+  if (!snapshot) {
+    return null;
+  }
+
+  const start = resolveRangeFromAnchorSnapshot(editor, snapshot.start);
+  const end = resolveRangeFromAnchorSnapshot(editor, snapshot.end);
+  if (!start || !end) {
+    return null;
+  }
+
+  try {
+    const range = document.createRange();
+    range.setStart(start.startContainer, start.startOffset);
+    range.setEnd(end.startContainer, end.startOffset);
+    return range;
+  } catch {
+    return null;
+  }
 }
 
 function collectParagraphsInRange(editor: HTMLElement, range: Range): HTMLElement[] {
@@ -398,7 +446,7 @@ export function RichEditor({
   const lastParagraphIdRef = useRef<string | null>(null);
   const insertBookmarkIdRef = useRef<string | null>(null);
   const selectionAnchorRef = useRef<ParagraphAnchorSnapshot | null>(null);
-  const selectionExpandedAnchorRef = useRef<ParagraphAnchorSnapshot | null>(null);
+  const selectionExpandedSnapshotRef = useRef<RangeSelectionSnapshot | null>(null);
   const insertAnchorRef = useRef<ParagraphAnchorSnapshot | null>(null);
   const pendingInsertRef = useRef<PendingInsertContext | null>(null);
 
@@ -505,7 +553,7 @@ export function RichEditor({
       selectionAnchorRef.current = snapshot;
       if (!range.collapsed) {
         lastExpandedRangeRef.current = range.cloneRange();
-        selectionExpandedAnchorRef.current = snapshot;
+        selectionExpandedSnapshotRef.current = createRangeSelectionSnapshot(editor, range);
       }
     }
   }, []);
@@ -687,15 +735,12 @@ export function RichEditor({
       lastExpandedRangeRef.current = nextRange.cloneRange();
       lastParagraphIdRef.current =
         getClosestParagraph(nextRange.startContainer)?.dataset.nodeId || null;
-      const nextSnapshot = createParagraphAnchorSnapshot(editor, nextRange);
-      selectionAnchorRef.current = nextSnapshot;
-      selectionExpandedAnchorRef.current = nextSnapshot;
-
-      emitDoc();
+      selectionAnchorRef.current = createParagraphAnchorSnapshot(editor, nextRange);
+      selectionExpandedSnapshotRef.current = createRangeSelectionSnapshot(editor, nextRange);
     } catch {
       rememberSelection();
     }
-  }, [clearActiveSelectionMarkers, emitDoc, rememberSelection]);
+  }, [clearActiveSelectionMarkers, rememberSelection]);
 
   const findActiveSelectionSpan = useCallback((range: Range): HTMLElement | null => {
     const editor = editorRef.current;
@@ -729,14 +774,14 @@ export function RichEditor({
       if (target.closest(".editor-canvas")) {
         clearActiveSelectionMarkers();
         lastExpandedRangeRef.current = null;
-        selectionExpandedAnchorRef.current = null;
+        selectionExpandedSnapshotRef.current = null;
         return;
       }
 
       if (!panel || !panel.contains(target)) {
         clearActiveSelectionMarkers();
         lastExpandedRangeRef.current = null;
-        selectionExpandedAnchorRef.current = null;
+        selectionExpandedSnapshotRef.current = null;
       }
     };
 
@@ -1030,7 +1075,10 @@ export function RichEditor({
         return expanded.cloneRange();
       }
 
-      const expandedBySnapshot = resolveRangeFromAnchorSnapshot(editor, selectionExpandedAnchorRef.current);
+      const expandedBySnapshot = resolveRangeFromSelectionSnapshot(
+        editor,
+        selectionExpandedSnapshotRef.current
+      );
       if (expandedBySnapshot) {
         return expandedBySnapshot;
       }
@@ -1102,9 +1150,8 @@ export function RichEditor({
             const next = workingRange.cloneRange();
             lastRangeRef.current = next;
             lastExpandedRangeRef.current = next.cloneRange();
-            const nextSnapshot = createParagraphAnchorSnapshot(editor, next);
-            selectionAnchorRef.current = nextSnapshot;
-            selectionExpandedAnchorRef.current = nextSnapshot;
+            selectionAnchorRef.current = createParagraphAnchorSnapshot(editor, next);
+            selectionExpandedSnapshotRef.current = createRangeSelectionSnapshot(editor, next);
             lastParagraphIdRef.current = getClosestParagraph(next.startContainer)?.dataset.nodeId || null;
           }
         } else {
@@ -1123,9 +1170,8 @@ export function RichEditor({
             lastRangeRef.current = nextRange.cloneRange();
             lastExpandedRangeRef.current = nextRange.cloneRange();
             lastParagraphIdRef.current = getClosestParagraph(nextRange.startContainer)?.dataset.nodeId || null;
-            const nextSnapshot = createParagraphAnchorSnapshot(editor, nextRange);
-            selectionAnchorRef.current = nextSnapshot;
-            selectionExpandedAnchorRef.current = nextSnapshot;
+            selectionAnchorRef.current = createParagraphAnchorSnapshot(editor, nextRange);
+            selectionExpandedSnapshotRef.current = createRangeSelectionSnapshot(editor, nextRange);
             ok = true;
           } else {
             const span = document.createElement("span");
@@ -1148,9 +1194,8 @@ export function RichEditor({
               lastRangeRef.current = nextRange.cloneRange();
               lastExpandedRangeRef.current = nextRange.cloneRange();
               lastParagraphIdRef.current = getClosestParagraph(nextRange.startContainer)?.dataset.nodeId || null;
-              const nextSnapshot = createParagraphAnchorSnapshot(editor, nextRange);
-              selectionAnchorRef.current = nextSnapshot;
-              selectionExpandedAnchorRef.current = nextSnapshot;
+              selectionAnchorRef.current = createParagraphAnchorSnapshot(editor, nextRange);
+              selectionExpandedSnapshotRef.current = createRangeSelectionSnapshot(editor, nextRange);
               ok = true;
             } catch {
               ok = false;
